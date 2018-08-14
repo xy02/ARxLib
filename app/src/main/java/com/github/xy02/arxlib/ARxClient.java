@@ -64,39 +64,28 @@ public class ARxClient {
         }
     };
 
-
-    public <T> Observable<T> callARxService(String apiName, @Nullable Object reqData, Class<T> observableDataClazz) {
+    public Observable<String> callARxService(String apiName, @Nullable String reqJSONData) {
         return Observable.create(e -> {
+            String id = UUID.randomUUID().toString();
+            Disposable d = onNextSubject
+                    .filter(it -> it.id.equals(id))
+                    .map(it -> it.message)
+                    .doOnNext(e::onNext)
+                    .doOnError(e::tryOnError)
+                    .subscribe();
             ServiceConnection conn = new ServiceConnection() {
+                @Override
+                public void onBindingDied(ComponentName name) {
+                    onFinishSubject.onNext(new CbData(id, "service died"));
+                }
+
                 @Override
                 public void onServiceConnected(ComponentName name, IBinder service) {
                     Log.i(tag, "onServiceConnected, tid:" + Thread.currentThread().getId());
                     IARxService arxService = IARxService.Stub.asInterface(service);
-                    String id = UUID.randomUUID().toString();
-                    Disposable d = onNextSubject
-                            .filter(it -> it.id.equals(id))
-                            .map(it -> JSON.parseObject(it.message, observableDataClazz))
-                            .doOnNext(e::onNext)
-                            .doOnError(e::tryOnError)
-                            .subscribe();
-                    onFinishSubject
-                            .filter(it -> it.id.equals(id))
-                            .take(1)
-                            .doOnNext(it -> d.dispose())
-                            .doOnNext(it -> {
-                                if (it.message != null)
-                                    e.tryOnError(new Exception(it.message));
-                                else
-                                    e.onComplete();
-                            })
-                            .doOnNext(it -> context.unbindService(this))
-                            .subscribe();
-                    String apiJSONData = null;
-                    if (reqData != null) {
-                        apiJSONData = JSON.toJSONString(reqData);
-                    }
+
                     try {
-                        arxService.call(id, apiName, apiJSONData, serviceCb);
+                        arxService.call(id, apiName, reqJSONData, serviceCb);
                     } catch (RemoteException ex) {
                         e.tryOnError(ex);
                     }
@@ -109,12 +98,37 @@ public class ARxClient {
                     e.onComplete();
                 }
             };
+            Disposable d2 =onFinishSubject
+                    .filter(it -> it.id.equals(id))
+                    .take(1)
+                    .doOnNext(it -> {
+                        if (it.message != null)
+                            e.tryOnError(new Exception(it.message));
+                        else
+                            e.onComplete();
+                    })
+                    .doOnComplete(() ->{
+                        d.dispose();
+                        context.unbindService(conn);
+                    })
+                    .subscribe();
             boolean connected = context.bindService(intent, conn, Context.BIND_AUTO_CREATE);
             if (!connected) {
                 Log.e(tag, ERR_CONNECT);
+                d.dispose();
+                d2.dispose();
                 e.tryOnError(new Exception(ERR_CONNECT));
             }
         });
+    }
+
+    public <T> Observable<T> callARxService(String apiName, @Nullable Object reqData, Class<T> observableDataClazz) {
+        String apiJSONData = null;
+        if (reqData != null) {
+            apiJSONData = JSON.toJSONString(reqData);
+        }
+        return callARxService(apiName, apiJSONData)
+                .map(it -> JSON.parseObject(it, observableDataClazz));
     }
 
 }
