@@ -105,6 +105,7 @@ public class ARxClient {
             @Override
             public void onServiceDisconnected(ComponentName name) {
                 Log.i(tag, "onServiceDisconnected, tid:" + Thread.currentThread().getId());
+                emitter.onComplete();
             }
         };
         boolean connected = context.bindService(intent, state.conn, Context.BIND_AUTO_CREATE);
