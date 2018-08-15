@@ -34,15 +34,88 @@ public class ARxClient {
         this.context = context;
     }
 
-    private class CbData {
-        public String id;
-        private String message;
+    public Observable<String> callARxService(String apiName, @Nullable String reqJSONData) {
+        return observableIARxService
+                .flatMap(service->{
+                    String id = UUID.randomUUID().toString();
+                    service.call(id, apiName, reqJSONData, serviceCb);
+                    return onNextSubject
+                            .filter(it -> it.id.equals(id))
+                            .map(it -> it.message)
+                            .takeUntil(onFinishSubject
+                                    .filter(it -> it.id.equals(id))
+                            );
+                });
+    }
 
-        public CbData(String id, String message) {
+    public <T> Observable<T> callARxService(String apiName, @Nullable Object reqData, Class<T> observableDataClazz) {
+        String apiJSONData = null;
+        if (reqData != null) {
+            apiJSONData = JSON.toJSONString(reqData);
+        }
+        return callARxService(apiName, apiJSONData)
+                .map(it -> JSON.parseObject(it, observableDataClazz));
+    }
+
+    private class CbData {
+         String id;
+         String message;
+
+         CbData(String id, String message) {
             this.id = id;
             this.message = message;
         }
     }
+
+    private class ConnectionState{
+        ServiceConnection conn;
+        IBinder.DeathRecipient dr;
+        IARxService service;
+        void clear(){
+            if (service!=null)
+                service.asBinder().unlinkToDeath(dr,0);
+            if(conn!= null)
+                context.unbindService(conn);
+        }
+    }
+
+    private Observable<IARxService> observableIARxService = Observable.<ConnectionState>create(emitter -> {
+        ConnectionState state = new ConnectionState();
+        state.dr = ()->{
+            state.clear();
+            emitter.tryOnError(new Exception("service:"+intent.getPackage()+":"+intent.getAction()+" died"));
+        };
+        state.conn = new ServiceConnection() {
+
+            @Override
+            public void onServiceConnected(ComponentName name, IBinder service) {
+                Log.i(tag, "onServiceConnected, tid:" + Thread.currentThread().getId());
+                try {
+                    service.linkToDeath(state.dr,0);
+//                    arxService.call(id, apiName, reqJSONData, serviceCb);
+                } catch (RemoteException ex) {
+                    emitter.tryOnError(ex);
+                    return;
+                }
+                state.service = IARxService.Stub.asInterface(service);
+                emitter.onNext(state);
+            }
+
+
+            @Override
+            public void onServiceDisconnected(ComponentName name) {
+                Log.i(tag, "onServiceDisconnected, tid:" + Thread.currentThread().getId());
+            }
+        };
+        boolean connected = context.bindService(intent, state.conn, Context.BIND_AUTO_CREATE);
+        if (!connected) {
+            Log.e(tag, ERR_CONNECT);
+            emitter.tryOnError(new Exception(ERR_CONNECT));
+        }
+    })
+            .map(state-> state.service)
+            .replay(1)
+            .refCount();
 
     private PublishSubject<CbData> onNextSubject = PublishSubject.create();
     private PublishSubject<CbData> onFinishSubject = PublishSubject.create();
@@ -63,72 +136,5 @@ public class ARxClient {
             onFinishSubject.onNext(new CbData(id, null));
         }
     };
-
-    public Observable<String> callARxService(String apiName, @Nullable String reqJSONData) {
-        return Observable.create(e -> {
-            String id = UUID.randomUUID().toString();
-            Disposable d = onNextSubject
-                    .filter(it -> it.id.equals(id))
-                    .map(it -> it.message)
-                    .doOnNext(e::onNext)
-                    .doOnError(e::tryOnError)
-                    .subscribe();
-            ServiceConnection conn = new ServiceConnection() {
-                @Override
-                public void onBindingDied(ComponentName name) {
-                    onFinishSubject.onNext(new CbData(id, "service died"));
-                }
-
-                @Override
-                public void onServiceConnected(ComponentName name, IBinder service) {
-                    Log.i(tag, "onServiceConnected, tid:" + Thread.currentThread().getId());
-                    IARxService arxService = IARxService.Stub.asInterface(service);
-
-                    try {
-                        arxService.call(id, apiName, reqJSONData, serviceCb);
-                    } catch (RemoteException ex) {
-                        e.tryOnError(ex);
-                    }
-                }
-
-
-                @Override
-                public void onServiceDisconnected(ComponentName name) {
-                    Log.i(tag, "onServiceDisconnected, tid:" + Thread.currentThread().getId());
-                    e.onComplete();
-                }
-            };
-            Disposable d2 =onFinishSubject
-                    .filter(it -> it.id.equals(id))
-                    .take(1)
-                    .doOnNext(it -> {
-                        if (it.message != null)
-                            e.tryOnError(new Exception(it.message));
-                        else
-                            e.onComplete();
-                    })
-                    .doOnComplete(() ->{
-                        d.dispose();
-                        context.unbindService(conn);
-                    })
-                    .subscribe();
-            boolean connected = context.bindService(intent, conn, Context.BIND_AUTO_CREATE);
-            if (!connected) {
-                Log.e(tag, ERR_CONNECT);
-                d.dispose();
-                d2.dispose();
-                e.tryOnError(new Exception(ERR_CONNECT));
-            }
-        });
-    }
-
-    public <T> Observable<T> callARxService(String apiName, @Nullable Object reqData, Class<T> observableDataClazz) {
-        String apiJSONData = null;
-        if (reqData != null) {
-            apiJSONData = JSON.toJSONString(reqData);
-        }
-        return callARxService(apiName, apiJSONData)
-                .map(it -> JSON.parseObject(it, observableDataClazz));
-    }
 
 }

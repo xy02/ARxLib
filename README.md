@@ -16,7 +16,7 @@ allprojects {
 Step 2. Add the dependency
 ```gradle
 dependencies {
-    implementation 'com.github.xy02:ARxLib:0.1.1'
+    implementation 'com.github.xy02:ARxLib:0.1.3'
 }
 ```
 ### On server side 
